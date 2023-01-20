@@ -72,8 +72,9 @@
                                 value="--Set Default Value--">--Set Default Value--</option>
                 <optgroup value="0" label="System (Default)">
                     {foreach $storeDefaultAttributes as $key => $system_attribute}
-                            <option value="{$system_attribute|escape:'htmlall':'UTF-8'}"
-                            {if isset($attr['presta_attr_code'])&& $attr['presta_attr_code'] == $system_attribute }
+                            {assign var='select_val' value="{'system-'}{$key}"}
+                            <option value="system-{$key|escape:'htmlall':'UTF-8'}"
+                            {if isset($attr['presta_attr_code'])&& $attr['presta_attr_code'] == $select_val }
                                     selected="selected"
                                 {/if}
                             >{$system_attribute|escape:'htmlall':'UTF-8'}</option>
@@ -81,8 +82,9 @@
                 </optgroup>
                 <optgroup value="0" label="Attributes(Variants)">
                     {foreach $storeAttributes as $store_attribute}
-                            <option value="{$store_attribute['id_attribute']|escape:'htmlall':'UTF-8'}"
-                            {if isset($attr['presta_attr_code'])&& $attr['presta_attr_code'] == $store_attribute['name'] }
+                            {assign var='select_val' value="{'attribute-'}{$store_attribute['id_attribute']}"}
+                            <option value="attribute-{$store_attribute['id_attribute']|escape:'htmlall':'UTF-8'}"
+                            {if isset($attr['presta_attr_code'])&& $attr['presta_attr_code'] == $select_val }
                                     selected="selected"
                                 {/if}
                             >{$store_attribute['name']|escape:'htmlall':'UTF-8'}</option>
@@ -90,7 +92,7 @@
                 </optgroup>
             </select>
         </td>
-        <td><input style="" {if isset($attr['default']) }
+        <td><input style="" {if isset($attr['default']) && $attr['presta_attr_code'] == '--Set Default Value--' }
                             name="newegg_attributes[{$k}][default]" type="text" value='{$attr['default']}' {else} type='hidden'
                                 {/if} value="" id="default_value_{$count}"></td>
 </tr>
@@ -124,15 +126,17 @@
                                 {/if} value="--Set Default Value--">--Set Default Value--</option>
                 <optgroup value="0" label="System (Default)">
                     {foreach $storeDefaultAttributes as $key => $system_attribute}
-                            <option value="{$system_attribute|escape:'htmlall':'UTF-8'}" {if isset($attr['presta_attr_code'])&& $attr['presta_attr_code'] == $system_attribute }
+                            {assign var='select_val' value="{'system-'}{$key}"}
+                            <option value="system-{$key|escape:'htmlall':'UTF-8'}" {if isset($attr['presta_attr_code'])&& $attr['presta_attr_code'] == select_val }
                                     selected="selected"
                                 {/if}>{$system_attribute|escape:'htmlall':'UTF-8'}</option>
                     {/foreach}                    
                 </optgroup>
                 <optgroup value="0" label="Attributes(Variants)">
                     {foreach $storeAttributes as $store_attribute}
-                            <option value="{$store_attribute['id_attribute']|escape:'htmlall':'UTF-8'}"
-                            {if isset($attr['presta_attr_code'])&& $attr['presta_attr_code'] == $store_attribute['name'] }
+                            {assign var='select_val' value="{'attribute-'}{$store_attribute['id_attribute']}"}
+                            <option value="attribute-{$store_attribute['id_attribute']|escape:'htmlall':'UTF-8'}"
+                            {if isset($attr['presta_attr_code'])&& $attr['presta_attr_code'] == $select_val }
                                     selected="selected"
                                 {/if}>{$store_attribute['name']|escape:'htmlall':'UTF-8'}</option>
                     {/foreach}
@@ -140,7 +144,7 @@
             </select>
         </td>
         
-        <td><input {if isset($attr['default']) }
+        <td><input {if isset($attr['default']) && $attr['presta_attr_code'] == '--Set Default Value--' }
                                    type="text" name="newegg_opt_attributes[{$k}][default]" value='{$attr['default']}' {else} type='hidden'
                                 {/if} value="" id="default_value_{$count}"></td>
         {$count= $count+1}

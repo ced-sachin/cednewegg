@@ -14,8 +14,8 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
         $this->list_no_link = true;
         $this->explicitSelect = true;
         $this->bulk_actions = array(
-            'upload' => array(
-                'text' => ('Upload|Update'),
+            'upload_product' => array(
+                'text' => ('Upload Product'),
                 'icon' => 'icon-upload',
             ),
             'sync' => array(
@@ -95,7 +95,7 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
         $this->_select .= 'shop.`name` AS `shopname`, a.`id_shop_default`, ';
         $this->_select .= 'cbprofile.`profile_id` AS `profile_id`, ';
         $this->_select .= 'cbprof.`profile_name` AS `profile_name`, ';
-
+        $this->_select .= 'cbprofile.`newegg_validation_error` AS `error_message`, ';
         $this->_select .= $alias_image . '.`id_image` AS `id_image`, a.`id_product` as `id_temp`,
         cl.`name` AS `name_category`, '
             . $alias . '.`price` AS `price_final`, a.`is_virtual`, pd.`nb_downloadable`, 
@@ -158,6 +158,14 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
             'type' => 'bool',
             'class' => 'fixed-width-sm',
             'orderby' => false
+        );
+
+        $this->fields_list['error_message'] = array(
+            'title' => $this->l('Validity'),
+            'align' => 'text-center',
+            'search' => false,
+            'class' => 'fixed-width-sm',
+            'callback' => 'validationData'
         );
 
         if ($profile_select = Tools::getValue('profile_select')) {
@@ -231,6 +239,21 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
         }
     }
 
+    public function validationData($data, $rowData)
+    {   
+        $productName = isset($rowData['name']) ? $rowData['name'] : '';
+        $this->context->smarty->assign(
+            array(
+                'validationData' => $data,
+                'validationJson' => $data,
+                'productName' => $productName
+            )
+        );
+        return $this->context->smarty->fetch(
+            _PS_MODULE_DIR_ . 'cednewegg/views/templates/admin/product/list/validation.tpl'
+        );
+    }
+
     public function renderList()
     {
         $this->addRowAction('view');
@@ -271,6 +294,7 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
     }
 
     public function processBulkAssignProfile() {
+
         $page = (int) Tools::getValue('page');
         if (!$page) {
             $page = (int) Tools::getValue('submitFilter' . $this->table);
@@ -281,7 +305,7 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
         if(isset($this->profile_select)) {
             $neweggProfile = (int)$this->profile_select;
         }
-        // echo '<pre>'; print_r($ids); die('<br>aaaaaa');
+        
         if (!empty($neweggProfile)) {
             if (!empty($ids)) {
                 $CedNeweggProduct = new CedNeweggProduct();
@@ -302,6 +326,37 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
             Tools::redirectAdmin($controller_link);
         }
         $this->context->cookie->profile_select = '';
+    }
+
+    public function processBulkUploadProduct() {
+        $page = (int) Tools::getValue('page');
+        if (!$page) {
+            $page = (int) Tools::getValue('submitFilter' . $this->table);
+        }
+        $link = new LinkCore();
+
+        $ids = $this->boxes;
+        if(isset($this->profile_select)) {
+            $profile_id = (int)$this->profile_select;
+        }
+
+        if (!empty($profile_id)) {
+            if (!empty($ids)) { 
+                $CedNeweggProduct = new CedNeweggProduct();
+                $message = $CedNeweggProduct->prepareData($ids,$profile_id);
+                $messages['success'] = " Product successfully uploaded";
+            } else {
+                $this->errors[] = "Please select Product(s)";
+                $controller_link = $link->getAdminLink('AdminCedNeweggProducts') . '&productSelectError=1' . ($page > 1 ? '&submitFilter' . $this->table . '=' . (int)$page : '');
+                Tools::redirectAdmin($controller_link);
+            }
+        } else {
+            $this->errors[] = "please select profile !!.";
+            $controller_link = $link->getAdminLink('AdminCedNeweggProducts') . '&productAssignProfileError=1' . ($page > 1 ? '&submitFilter' . $this->table . '=' . (int)$page : '');
+            Tools::redirectAdmin($controller_link);
+        }
+        $this->context->cookie->profile_select = '';
+        
     }
 
     public function setMedia($isNewTheme = false)
