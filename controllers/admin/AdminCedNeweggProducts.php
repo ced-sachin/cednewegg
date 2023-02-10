@@ -18,8 +18,8 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
                 'text' => ('Upload Product'),
                 'icon' => 'icon-upload',
             ),
-            'sync' => array(
-                'text' => ('Sync Quantity'),
+            'sync_status' => array(
+                'text' => ('Sync Newegg Status'),
                 'icon' => 'icon-refresh',
             ),
             'remove' => array(
@@ -94,8 +94,10 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
             LEFT JOIN `' . _DB_PREFIX_ . 'product_download` pd ON (pd.`id_product` = a.`id_product` AND pd.`active` = 1)';
         $this->_select .= 'shop.`name` AS `shopname`, a.`id_shop_default`, ';
         $this->_select .= 'cbprofile.`profile_id` AS `profile_id`, ';
+        $this->_select .= 'cbprofile.`newegg_product_status` AS `newegg_product_status`, ';
         $this->_select .= 'cbprof.`profile_name` AS `profile_name`, ';
         $this->_select .= 'cbprofile.`newegg_validation_error` AS `error_message`, ';
+        $this->_select .= 'cbprofile.`newegg_feed_error` AS `newegg_feed_error`, ';
         $this->_select .= $alias_image . '.`id_image` AS `id_image`, a.`id_product` as `id_temp`,
         cl.`name` AS `name_category`, '
             . $alias . '.`price` AS `price_final`, a.`is_virtual`, pd.`nb_downloadable`, 
@@ -160,8 +162,23 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
             'orderby' => false
         );
 
+
         $this->fields_list['error_message'] = array(
             'title' => $this->l('Validity'),
+            'align' => 'text-center',
+            'search' => false,
+            'class' => 'fixed-width-sm',
+            'callback' => 'validationData'
+        );
+
+        $this->fields_list['newegg_product_status'] = array(
+            'title' => ('Newegg Status'),
+            'align' => 'text-center',
+            // 'callback' => 'validationData'
+        );
+
+        $this->fields_list['newegg_feed_error'] = array(
+            'title' => $this->l('Uploading error'),
             'align' => 'text-center',
             'search' => false,
             'class' => 'fixed-width-sm',
@@ -293,6 +310,62 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
         // parent::renderForm();
     }
 
+    public function processBulkSyncStatus() {
+        $page = (int) Tools::getValue('page');
+        if (!$page) {
+            $page = (int) Tools::getValue('submitFilter' . $this->table);
+        }
+        $link = new LinkCore();
+
+        $ids = $this->boxes;
+        if(isset($this->profile_select)) {
+            $neweggProfile = (int)$this->profile_select;
+        }
+        $db = Db::getInstance();
+        
+        foreach($ids as $id) {
+            $request_data = $db->executeS("SELECT `newegg_queue_id`,`account_id` FROM `" . _DB_PREFIX_ . "newegg_profile_product` WHERE `profile_id` = ".$neweggProfile." and `product_id` = ".$id)[0];
+            $accountDetail = $this->getAccountDetails($request_data['account_id']);
+            $product = new Product($id);
+            $action = 'datafeedmgmt/feeds/result/' . $request_data['newegg_queue_id'];
+            $response = $this->getRequest($action, $accountDetail);
+            // print_r($response); die(__FILE__);
+            if(!isset($response['NeweggEnvelope']['Message']['ProcessingReport'])){
+                $this->errors[] = 'Product '.$id.' under process';
+                continue;    
+            }
+
+            if(isset($response['NeweggEnvelope']['Message']['ProcessingReport']['Result'])){
+                if (!isset($response['NeweggEnvelope']['Message']['ProcessingReport']['Result'][0])) {
+                    $newresponse[0] = $response['NeweggEnvelope']['Message']['ProcessingReport']['Result'];
+                } else {
+                    $newresponse = $response['NeweggEnvelope']['Message']['ProcessingReport']['Result'];
+                }   
+            } else {
+                $db->execute("UPDATE " . _DB_PREFIX_ . "newegg_profile_product SET `newegg_feed_error` = '', `newegg_product_status` = 'Uploaded' where `profile_id`=".$neweggProfile." and  `product_id`= ".$id);   
+                continue;
+            }
+            // print_r($newresponse); die(__FILE__);
+            foreach($newresponse as $val) {
+                if (isset($val['AdditionalInfo']['SellerPartNumber']) || isset($val['SellerPartNumber'])) {                
+                    if($product->reference == $val['AdditionalInfo']['SellerPartNumber']) {
+                        $db->execute("UPDATE " . _DB_PREFIX_ . "newegg_profile_product SET `newegg_feed_error` = '".$val['ErrorList']['ErrorDescription'][1]."', `newegg_product_status` = 'upload error' where `profile_id`=".$neweggProfile." and  `product_id`= ".$id);
+                        $this->errors[] = "Product upload request with invalid data";
+                    } else {
+                        $db->execute("UPDATE " . _DB_PREFIX_ . "newegg_profile_product SET `newegg_feed_error` = '', `newegg_product_status` = 'Uploaded' where `profile_id`=".$neweggProfile." and  `product_id`= ".$id);
+                    }                    
+                }
+            }
+        }
+    }
+
+    public function getAccountDetails($id) {
+        $db = Db::getInstance();
+        $sql = "SELECT * FROM `" . _DB_PREFIX_ . "newegg_accounts` where id=".$id;
+        $result = $db->executeS($sql);
+        return $result[0];
+    }
+
     public function processBulkAssignProfile() {
 
         $page = (int) Tools::getValue('page');
@@ -344,7 +417,11 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
             if (!empty($ids)) { 
                 $CedNeweggProduct = new CedNeweggProduct();
                 $message = $CedNeweggProduct->prepareData($ids,$profile_id);
-                $messages['success'] = " Product successfully uploaded";
+                if(empty($message)) {
+                    $this->errors[] = "Product not uploaded!!";
+                } else {
+                    $this->confirmations[] = "Product move in queue, Sync status to check product is uploaded or not!!";
+                }
             } else {
                 $this->errors[] = "Please select Product(s)";
                 $controller_link = $link->getAdminLink('AdminCedNeweggProducts') . '&productSelectError=1' . ($page > 1 ? '&submitFilter' . $this->table . '=' . (int)$page : '');
@@ -364,5 +441,72 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
         parent::setMedia($isNewTheme);
         $this->addJquery();
         $this->addJS(_PS_MODULE_DIR_.'cednewegg/views/js/admin/product/product.js');
+    }
+
+    public function getRequest($url, $currentAccount, $params = [])
+    {  
+        if (!isset($params['append'])) {
+            $params['append'] = '';
+        }
+        $country = $currentAccount['account_location'];
+        switch ($country) {
+                case 0:
+                    $mainUrl = "https://api.newegg.com/marketplace/";
+                    break;
+                case 1:
+                    $mainUrl = "https://api.newegg.com/marketplace/can/";
+                    break;
+                default:
+                    $mainUrl = "https://api.newegg.com/marketplace/b2b/";
+                    break;
+
+            }
+        $currentAccountDetail = $currentAccount;
+        if (is_array($currentAccountDetail) && !empty($currentAccountDetail)) {
+
+            $url = $mainUrl . $url . "?sellerid=" . $currentAccountDetail['seller_id'] . $params['append'];
+            // print_r($url); die(__FILE__);
+            $headers = array();
+            if (isset($params['json'])) {
+                $headers[] = "Content-Type: application/json";
+            }
+            $headers[] = "Accept: application/json";
+            $headers[] = "Authorization: " . $currentAccountDetail['authorization_key'];
+            $headers[] = "SecretKey: " . $currentAccountDetail['secret_key'];
+            if (isset($params['body'])) {
+                $putString = stripslashes($params['body']);
+                $putData = tmpfile();
+                fwrite($putData, $putString);
+                fseek($putData, 0);
+            }
+
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_HEADER, 0);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+            if (isset($params['body'])) {
+                curl_setopt($ch, CURLOPT_PUT, true);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $params['body']);
+                curl_setopt($ch, CURLOPT_INFILE, $putData);
+                curl_setopt($ch, CURLOPT_INFILESIZE, strlen($putString));
+            }
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            $serverOutput = curl_exec($ch);
+            curl_close($ch);
+            return json_decode($this->formatJson($serverOutput), true);
+        }
+    }
+
+    function formatJson($json_data)
+    {
+        for ($i = 0; $i <= 31; ++$i) {
+            $json_data = str_replace(chr($i), "", $json_data);
+        }
+        $json_data = str_replace(chr(127), "", $json_data);
+        if (0 === strpos(bin2hex($json_data), 'efbbbf')) {
+            $json_data = substr($json_data, 3);
+        }
+        return $json_data;
     }
 }

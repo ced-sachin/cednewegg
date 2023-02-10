@@ -135,6 +135,13 @@ class CedNeweggProduct
         return $exec;
     }
 
+    public function updateProductStatus($ids, $profile_id, $account_id, $queueId) {
+        foreach($ids as $id){
+            $sql = "UPDATE " . _DB_PREFIX_ . "newegg_profile_product SET `newegg_product_status` = 'QUEUED', `newegg_feed_error` = '', `newegg_queue_id` = '".$queueId."'  where `profile_id`=".$profile_id." and  `product_id`= ".$id;
+            Db::getInstance()->execute($sql);
+        }
+    }
+
     public function prepareData($ids, $profile_id) {
         $db = Db::getInstance();
         $response = false;
@@ -142,6 +149,7 @@ class CedNeweggProduct
         $account_id = $account_id[0]['account_id'];
         $validatedProducts = '';
         $productToUpload = [];
+        $message = '';
         foreach ($ids as $id) {
 
             $profileData = $this->profileData($profile_id);
@@ -162,8 +170,12 @@ class CedNeweggProduct
             }
         }
         if(!empty($productToUpload)) {
-            $message = $this->prepareSimpleProducts($productToUpload, $profile_id, $account_id);
-            $messages['success'] = " Product successfully upload";
+            $uploaded_data = $this->prepareSimpleProducts($productToUpload, $profile_id, $account_id);
+            if($uploaded_data != false) {
+                $this->updateProductStatus($productToUpload, $profile_id, $account_id, $uploaded_data['QueueId']);
+                $message = "Product in queue!";
+                return $message;
+            }             
         }
 
     }
@@ -457,8 +469,11 @@ class CedNeweggProduct
                 $itemFeeds = array();
                 $post_data = array();
                 $this->key = 0;
+                $summaryInfo = '';
+                $items = array();
                 foreach ($ids as $id) {
                     $product = new Product($id);
+                    // print_r($product->quantity);
                     $profileData = $this->profileProductData($id, $profileId);
                     $productStatus =$profileData['newegg_product_status'] /*$profileData->getColumnValues('newegg_product_status')*/;
                     $profileProductsId = $profileData['id']/*$profileData->getColumnValues('id')*/;
@@ -468,36 +483,48 @@ class CedNeweggProduct
                     if (!$categoryId) {
                         continue;
                     }
+
+                    $item = array();
                     // if ($this->key == 0) {
-                        $item = array();
-                        $itemFeed = array();
-                        $itemFeed['SummaryInfo'] = array('SubCategoryID' => $categoryId);
+                        if(empty($summaryInfo)) {
+                            $itemFeed['SummaryInfo'] = array('SubCategoryID' => $categoryId);
+                        }
+                        $summaryInfo = $itemFeed['SummaryInfo'];
                     // }
-                    $productArray = (array)$product;
-                    if ($productStatus == 'uploaded') {
+                    if ($productStatus == 'Uploaded') {
                         $item['Action'] = 'Update Item';
                     } else {
                         $item['Action'] = 'Create Item';
                     }
+
+                    $productArray = (array)$product;
                     // $item['BasicInfo'] = $this->getProductInfo($productArray, $id, null, $product, $profile);
                     $item['BasicInfo'] = array();
                     $requiredAttributes = json_decode($profile['profile_req_opt_attribute'], 1)[0];
                     $item['BasicInfo'] = $this->getProductInfo($id, (array)$product, $requiredAttributes);
                     $item['SubCategoryProperty'] = $this->getCategoryDataModified($id, (array)$product,$requiredAttributes,$categoryName);
                     
-                    $itemFeed['Item'][] = $item;
+                    array_push($items , $item);
                     // $this->key++;
                     // $profileProducts = $this->profileproducts->create()->load($profileProductsId);
                     // $profileProducts->setData('newegg_product_status', 'uploaded')->save();
                 }
+                $itemFeed['Item'] = $items;
                 $message['Itemfeed'] = $itemFeed;
                 $newegg_envelope['Message'] = $message;
                 $post_data['NeweggEnvelope'] = $newegg_envelope;
                 $data = json_encode($post_data);
-                // echo '<pre>'; print_r($post_data); die(__FILE__);
                 $response = $this->postRequest('/datafeedmgmt/feeds/submitfeed', $this->getAccountDetails($accountId), ['body' => $data,
                     'append' => '&requesttype=ITEM_DATA']);
-                echo '<pre>'; print_r($response); die(__FILE__);
+                // $response = json_decode($response,true);
+
+                // echo '<pre>'; print_r($response); die(__FILE__);
+                if($response['IsSuccess']==1){
+                    $api_data = array('IsSuccess' => true, 'QueueId' => $response['ResponseBody']['ResponseList'][0]['RequestId'] );
+                    return $api_data;
+                }else{
+                    return false;
+                }
             }
         } catch (\Exception $e) {
             print_r($e->getMessage()."::".$e->getLine()."::".$e->getFile()); die(__FILE__);
@@ -684,16 +711,16 @@ class CedNeweggProduct
                             $item['BulletDescription'] = $attributeValue[1];
                             $item['ProductDescription'] = $attributeValue[1];
                             $item['ItemDimension'] = array();
-                            $item['ItemDimension']['ItemLength'] = $productArray['depth'];
-                            $item['ItemDimension']['ItemWidth'] = $productArray['width'];
-                            $item['ItemDimension']['ItemHeight'] = $productArray['height'];  
+                            $item['ItemDimension']['ItemLength'] = number_format( $productArray['depth'], 2, '.', '' );
+                            $item['ItemDimension']['ItemWidth'] = number_format( $productArray['width'], 2, '.', '' );
+                            $item['ItemDimension']['ItemHeight'] = number_format( $productArray['height'], 2, '.', '' ); 
                         }else{
                             $item['BulletDescription'] = $neweggAttribute['default'];
                             $item['ProductDescription'] = $neweggAttribute['default'];
                             $item['ItemDimension'] = array();
-                            $item['ItemDimension']['ItemLength'] = $productArray['depth'];
-                            $item['ItemDimension']['ItemWidth'] = $productArray['width'];
-                            $item['ItemDimension']['ItemHeight'] = $productArray['height'];
+                            $item['ItemDimension']['ItemLength'] = number_format( $productArray['depth'], 2, '.', '' );
+                            $item['ItemDimension']['ItemWidth'] = number_format( $productArray['width'], 2, '.', '' );
+                            $item['ItemDimension']['ItemHeight'] = number_format( $productArray['height'], 2, '.', '' );
                         }
                     } 
                     break;
@@ -773,7 +800,7 @@ class CedNeweggProduct
                         if ($attributeCode){                                    
                             $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
                             $item['Shipping'] = $attributeValue;
-                            $item['Inventory'] = $productArray['quantity'];
+                            $item['Inventory'] = StockAvailable::getQuantityAvailableByProduct($id);
                             $item['LimitQuantity'] = $productArray['minimal_quantity'];
                             $item['ActivationMark'] = true;
                             $item['ItemImages'] = array();
@@ -788,7 +815,7 @@ class CedNeweggProduct
                                                                 'Marble'=>'Is a marble'));
                         }else{
                             $item['Shipping'] = $neweggAttribute['default'];
-                            $item['Inventory'] = $productArray['quantity'];
+                            $item['Inventory'] = StockAvailable::getQuantityAvailableByProduct($id);
                             $item['LimitQuantity'] = $productArray['minimal_quantity'];
                             $item['ActivationMark'] = true;
                             $item['ItemImages'] = array();
