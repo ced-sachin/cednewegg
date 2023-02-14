@@ -485,12 +485,12 @@ class CedNeweggProduct
                     }
 
                     $item = array();
-                    // if ($this->key == 0) {
+                    
                         if(empty($summaryInfo)) {
                             $itemFeed['SummaryInfo'] = array('SubCategoryID' => $categoryId);
                         }
                         $summaryInfo = $itemFeed['SummaryInfo'];
-                    // }
+                        
                     if ($productStatus == 'Uploaded') {
                         $item['Action'] = 'Update Item';
                     } else {
@@ -598,6 +598,7 @@ class CedNeweggProduct
             $server_output = curl_exec($ch);
             curl_close($ch);
         }
+        // return $server_output;
         return json_decode($this->formatJson($server_output),true);
     }
 
@@ -777,12 +778,12 @@ class CedNeweggProduct
                         if ($attributeCode){                                    
                             $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
                             $item['ShippingRestriction'] = $attributeValue;
-                            $item['Currency'] = 'CAD';
+                            $item['Currency'] = 'USD';
                             $item['SellingPrice'] = number_format( $productArray['price'], 2, '.', '' );
 
                         }else{
                             $item['ShippingRestriction'] = $neweggAttribute['default'];
-                            $item['Currency'] = 'CAD';
+                            $item['Currency'] = 'USD';
                             $item['SellingPrice'] = number_format( $productArray['price'], 2, '.', '' );
                         }
                     } 
@@ -1016,6 +1017,98 @@ class CedNeweggProduct
             }
             return $additionalAssets;
         }
+    }
+
+    public function updateInvPriceCanada($ids, $accountId)
+    {
+        if (empty($ids)) {
+            return false;
+        }
+        $ids = is_array($ids) ? $ids : [$ids];
+        $key = 0;
+        $temp = 0;
+        $xml = '';
+        $item = [];
+        foreach ($ids as $key => $id) {
+            $product = new Product($id);
+            $qty = StockAvailable::getQuantityAvailableByProduct($id);
+            if ($qty < 0) {
+                $qty = 0;
+            }
+            $qty = round($qty, 0);
+            
+            $price = Product::getPriceStatic($id);
+            if (empty($price)) {
+                $price = Product::getPriceStatic($id);
+            }
+            $sku = $product->reference;
+            array_push($item, array(
+                "SellerPartNumber" => $sku,
+                "SellingPrice" => round($price, 2),
+                "Shipping" => "Default",
+                "Inventory" => $qty
+            ));
+        }
+        $invArray = [
+            'NeweggEnvelope' => ['-xmlns:xsi' => 'http://www.w3.org/2001/XMLSchema-instance',
+                '-xsi:noNamespaceSchemaLocation' => 'Inventory.xsd',
+                'Header' => ['DocumentVersion' => "1.0"],
+                'MessageType' => 'Inventory',
+                'Message' => [
+                    'Inventory' => ['Item' => $item]
+                ]
+            ]
+        ];
+
+        $params['body'] = $body = json_encode($invArray);
+        $params['invurl'] = '&requesttype=INVENTORY_AND_PRICE_DATA';
+        $action = 'datafeedmgmt/feeds/submitfeed';
+        $serverOutput = $this->postRequest($action, $this->getAccountDetails($accountId), $params);
+        return "Inventory& Price Updated";
+        
+    }
+
+    /**
+     * @param $ids
+     * @param $accountId
+     * @return bool
+     */
+    public function updatePriceOnNewegg($ids, $accountId)
+    {
+        try {
+            $key = 0;
+            $temp = 0;
+            $item = [];
+            foreach ($ids as $key => $id) {
+                $product = new Product($id);
+
+                $price = Product::getPriceStatic($id);
+                array_push($item,[
+                    "SellerPartNumber" => $product->reference,
+                    "CountryCode" => "USA",
+                    "SellingPrice" => round($price, 2)
+                ]);
+
+            }
+            $invArray = [
+                'NeweggEnvelope' => ['-xmlns:xsi' => 'http://www.w3.org/2001/XMLSchema-instance',
+                    '-xsi:noNamespaceSchemaLocation' => 'BatchPriceUpdate.xsd',
+                    'Header' => ['DocumentVersion' => "2.0"],
+                    'MessageType' => 'Price',
+                    'Message' => [
+                        'Price' => ['Item' => $item]
+                    ]
+                ]
+            ];
+            $params['body'] = $body = json_encode($invArray);
+            $params['invurl'] = '&requesttype=PRICE_DATA';
+            $action = 'datafeedmgmt/feeds/submitfeed';
+            $serverOutput = $this->postRequest($action, $this->getAccountDetails($accountId), $params);
+            // die($serverOutput);
+        } catch (\Exception $e) {
+            $messages['error'] = $e->getMessage();
+        }
+
     }
 
 }

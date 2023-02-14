@@ -35,7 +35,10 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
                 'text' => ('Remove Profile'),
                 'icon' => 'icon-unlink',
             ),
-
+            'update_inv_price' => array(
+                'text' => ('Update Price Inventory'),
+                'icon' => 'icon-refresh',
+            ),
             'include' => array(
                 'text' => ('Include Item(s)'),
                 'icon' => 'icon-check',
@@ -310,6 +313,71 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
         // parent::renderForm();
     }
 
+    public function processBulkUpdateInvPrice() {
+        $page = (int) Tools::getValue('page');
+        if (!$page) {
+            $page = (int) Tools::getValue('submitFilter' . $this->table);
+        }
+        $link = new LinkCore();
+
+        $ids = $this->boxes;
+        if(isset($this->profile_select)) {
+            $neweggProfile = (int)$this->profile_select;
+        }
+        $db = Db::getInstance();
+        try {
+            $CedNeweggProduct = new CedNeweggProduct();
+            $accountId = $db->executeS("SELECT `account_id` FROM `" . _DB_PREFIX_ . "newegg_profile` WHERE `id` = ".$neweggProfile)[0]['account_id'];
+            $accountDetail = $this->getAccountDetails($accountId);
+            $location = $accountDetail['warehouse_location'];
+            
+
+            if ($location == 'CAN') { //for canada account
+                $response = $CedNeweggProduct->updateInvPriceCanada($ids , $accountId);
+                $this->confirmations[] = $response;
+                return true;
+            }
+            $CedNeweggProduct->updatePriceOnNewegg($ids, $accountId);
+            $key = 0;
+            $temp = 0;
+            $item = [];
+            foreach ($ids as $key => $id) {
+                   $product = new Product($id);
+                   $qty = StockAvailable::getQuantityAvailableByProduct($id);
+                   if ($qty < 0) {
+                       $qty = 0;
+                   }
+
+                $qty = round($qty, 0);
+                array_push($item, array(
+                    "SellerPartNumber" => $product->reference,
+                    "WarehouseLocation" => "$location",
+                    "Inventory" => "$qty"
+                ));
+            }
+            $invArray = [
+                'NeweggEnvelope' => ['-xmlns:xsi' => 'http://www.w3.org/2001/XMLSchema-instance',
+                    '-xsi:noNamespaceSchemaLocation' => 'BatchInventoryUpdate.xsd',
+                    'Header' => ['DocumentVersion' => "2.0"],
+                    'MessageType' => 'Inventory',
+                    'Message' => [
+                        'Inventory' => ['Item' => $item]
+                    ]
+                ]
+            ];
+            $params['body'] = $body = json_encode($invArray);
+            $params['invurl'] = '&requesttype=INVENTORY_DATA';
+            $action = 'datafeedmgmt/feeds/submitfeed';
+            // print_r($invArray); die(__FILE__);
+            $serverOutput = $CedNeweggProduct->postRequest($action, $accountDetail, $params);
+            // die($serverOutput);
+            $this->confirmations[] = "Inventory& Price Updated Successfully";
+        return true;
+        }catch(\Exception $e) {
+            die("Error while updating inventory& Price at line no ".$e->getLine(). "in file ".$e->getFile());
+        }
+    }
+
     public function processBulkSyncStatus() {
         $page = (int) Tools::getValue('page');
         if (!$page) {
@@ -329,13 +397,13 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
             $product = new Product($id);
             $action = 'datafeedmgmt/feeds/result/' . $request_data['newegg_queue_id'];
             $response = $this->getRequest($action, $accountDetail);
-            // print_r($response); die(__FILE__);
+            
             if(!isset($response['NeweggEnvelope']['Message']['ProcessingReport'])){
                 $this->errors[] = 'Product '.$id.' under process';
                 continue;    
             }
 
-            if(isset($response['NeweggEnvelope']['Message']['ProcessingReport']['Result'])){
+            if(isset($response['NeweggEnvelope']['Message']['ProcessingReport']['Result'])) {
                 if (!isset($response['NeweggEnvelope']['Message']['ProcessingReport']['Result'][0])) {
                     $newresponse[0] = $response['NeweggEnvelope']['Message']['ProcessingReport']['Result'];
                 } else {
@@ -345,11 +413,20 @@ class AdminCedNeweggProductsController extends ModuleAdminController {
                 $db->execute("UPDATE " . _DB_PREFIX_ . "newegg_profile_product SET `newegg_feed_error` = '', `newegg_product_status` = 'Uploaded' where `profile_id`=".$neweggProfile." and  `product_id`= ".$id);   
                 continue;
             }
-            // print_r($newresponse); die(__FILE__);
             foreach($newresponse as $val) {
                 if (isset($val['AdditionalInfo']['SellerPartNumber']) || isset($val['SellerPartNumber'])) {                
                     if($product->reference == $val['AdditionalInfo']['SellerPartNumber']) {
-                        $db->execute("UPDATE " . _DB_PREFIX_ . "newegg_profile_product SET `newegg_feed_error` = '".$val['ErrorList']['ErrorDescription'][1]."', `newegg_product_status` = 'upload error' where `profile_id`=".$neweggProfile." and  `product_id`= ".$id);
+                        // die($product->reference);
+                        $key_c = 0; 
+                        $erro = '';
+                        foreach($val['ErrorList']['ErrorDescription'] as $err){
+                            if($key_c > 0){
+                                $erro .= $err."<br/>";
+                            }
+                            $key_c += 1;
+                        }   
+
+                        $db->execute("UPDATE " . _DB_PREFIX_ . "newegg_profile_product SET `newegg_feed_error` = '".$erro."', `newegg_product_status` = 'upload error' where `profile_id`=".$neweggProfile." and  `product_id`= ".$id);
                         $this->errors[] = "Product upload request with invalid data";
                     } else {
                         $db->execute("UPDATE " . _DB_PREFIX_ . "newegg_profile_product SET `newegg_feed_error` = '', `newegg_product_status` = 'Uploaded' where `profile_id`=".$neweggProfile." and  `product_id`= ".$id);
