@@ -148,34 +148,58 @@ class CedNeweggProduct
         $account_id = $db->executeS("SELECT `account_id` FROM " . _DB_PREFIX_ . "newegg_profile where id=".$profile_id);
         $account_id = $account_id[0]['account_id'];
         $validatedProducts = '';
-        $productToUpload = [];
+        $simpleProductToUpload = [];
+        $variableProductToUpload = [];
         $message = '';
         foreach ($ids as $id) {
 
             $profileData = $this->profileData($profile_id);
             $profileId =$profileData['id'];
             $product = new Product($id);
+            
             $profile = $profileData;
             $sql = "SELECT * from " . _DB_PREFIX_ . "newegg_profile_product WHERE product_id=".$id. " and profile_id =".$profile_id;
             $productInProfile = $db->executeS($sql);
-
-            if(!empty($productInProfile)){
-                $validation = $this->validateProduct($id, $product, $profile);
-                if($validation == true) {
-                    array_push($productToUpload,$id);
-                }
-            }else{
+            $default_lang = (int)Configuration::get('PS_LANG_DEFAULT');
+            if(!empty($productInProfile)) {
+                if ($product->getAttributeCombinations( $default_lang )) {
+                    $product_combination = $this->getAttributesResume($id, $default_lang);
+                    if (isset($product_combination) && is_array($product_combination) && $product_combination) {
+                        foreach ($product_combination as $product_single) {
+                            $validation = $this->validateProduct($id, $product, $profile, $product_single, 'combination');
+                        }
+                    }
+                    if($validation == true) {
+                        array_push($variableProductToUpload,$id);
+                    }
+                } else {
+                    $validation = $this->validateProduct($id, $product, $profile);
+                    if($validation == true) {
+                        array_push($simpleProductToUpload,$id);
+                    }
+                }                
+            } else {
                 $validatedProducts .= 'Product '.$id.' not in profile!!';
                 continue;
             }
         }
-        if(!empty($productToUpload)) {
-            $uploaded_data = $this->prepareSimpleProducts($productToUpload, $profile_id, $account_id);
-            if($uploaded_data != false) {
-                $this->updateProductStatus($productToUpload, $profile_id, $account_id, $uploaded_data['QueueId']);
+        $message = '';
+        if( !empty($simpleProductToUpload) || !empty($variableProductToUpload)) {
+            $uploaded_simple_prod = $this->prepareSimpleProducts($simpleProductToUpload, $profile_id, $account_id);
+            $uploaded_variable_prod = $this->prepareVariableProducts($variableProductToUpload, $profile_id, $account_id);
+            if($uploaded_simple_prod != false) {
+                $this->updateProductStatus($simpleProductToUpload, $profile_id, $account_id, $uploaded_simple_prod['QueueId']);
                 $message = "Product in queue!";
+            }
+            if($uploaded_variable_prod != false) {            
+                $this->updateProductStatus($variableProductToUpload, $profile_id, $account_id, $uploaded_variable_prod['QueueId']);
+                $message = "Product in queue!";
+            }   
+            if(empty($message)) {
+                $message = "Product validation failed";
+            }
                 return $message;
-            }             
+                         
         }
 
     }
@@ -190,16 +214,20 @@ class CedNeweggProduct
      * @return bool
      * @throws \Exception
      */
-    public function validateProduct($id, $product, $profile, $parentId = null)
-    {   $db = Db::getInstance();
+    public function validateProduct($id, $product, $profile, $combination = null, $type = '')
+    {   
+        $db = Db::getInstance();
         try {
             $id_lang = Context::getContext()->language->id;
             $validatedProduct = false;
             if ($product == null) {
                 $product = new Product($id, false, $id_lang);
             }
-            
             $profileId = $profile['id'];
+            if($type == 'combination') {
+                $_skus = $combination['supplier_reference'];
+            }
+
             $sku = $product->reference;
             $productArray = (array)$product;
             $errors = [];
@@ -215,17 +243,21 @@ class CedNeweggProduct
                                 if($neweggAttribute['presta_attr_code']!= '--Set Default Value--'){
                                     $attributeCode = $neweggAttribute['presta_attr_code'];
                                 }
-                                if ($attributeCode){                                    
-                                    $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
-                                    if($attributeValue == ''){
+                                if ($attributeCode){   
+                                    if($type == 'combination') {                                 
+                                     $attributeValue = $combination['supplier_reference'];
+                                    } else {
+                                        $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
+                                    }
+                                    if($attributeValue == '') {
                                         $attributeCode = explode('-',$attributeCode)[1];
-                                        $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                        $result['error'] .= $_skus.": ". $attributeCode . ' is a required field. </br>';
                                     }
                                 }else{
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
                         case 'Manufacturer':
@@ -236,15 +268,16 @@ class CedNeweggProduct
                                 }
                                 if ($attributeCode){                                    
                                     $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
+                                    $attributeCode = explode('-',$attributeCode)[1];
+                                    
                                     if($attributeValue == ''){
-                                        $attributeCode = explode('-',$attributeCode)[1];
-                                        $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                        $result['error'] .= $sku.": ".$attributeCode . ' is a required field. </br>';
                                     }
                                 }else{
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
                         case 'ManufacturerPartNumberOrISBN':
@@ -253,36 +286,64 @@ class CedNeweggProduct
                                 if($neweggAttribute['presta_attr_code']!= '--Set Default Value--'){
                                     $attributeCode = $neweggAttribute['presta_attr_code'];
                                 }
-                                if ($attributeCode){                                    
-                                    $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
-                                    if($attributeValue == ''){
-                                        $attributeCode = explode('-',$attributeCode)[1];
-                                        $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                if ($attributeCode){     
+                                    if($type != 'combination') {                           
+                                        $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
+                                    } else {        
+                                        $attributeCode = explode('-',$attributeCode)[1];                      
+                                        $attributeValue = $combination["$attributeCode"];
+                                    }                                    
+                                    if($attributeValue == '') {
+                                        $result['error'] .= $_skus.": ".$attributeCode . ' is a required field. </br>';
                                     }
-                                }else{
+                                } else {
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
+                            case 'UPC':
+                                if (isset($neweggAttribute['presta_attr_code']) && $neweggAttribute['presta_attr_code']) {
+                                    $attributeCode = '';
+                                    if($neweggAttribute['presta_attr_code']!= '--Set Default Value--'){
+                                        $attributeCode = $neweggAttribute['presta_attr_code'];
+                                    }
+                                    if ($attributeCode){     
+                                        if($type != 'combination') {                           
+                                            $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
+                                        } else {        
+                                            $attributeCode = explode('-',$attributeCode)[1];                      
+                                            $attributeValue = $combination["$attributeCode"];
+                                        }                                    
+                                        if($attributeValue == '') {
+                                            $result['error'] .= $_skus.": ".$attributeCode . ' is a required field. </br>';
+                                        }
+                                    } else {
+                                        $attributeValue = $neweggAttribute['default'];
+                                    }
+                                } else {
+                                    $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
+                                }
+                                break;
                         case 'WebsiteShortTitle':
                             if (isset($neweggAttribute['presta_attr_code']) && $neweggAttribute['presta_attr_code']) {
                                 $attributeCode = '';
                                 if($neweggAttribute['presta_attr_code']!= '--Set Default Value--'){
                                     $attributeCode = $neweggAttribute['presta_attr_code'];
                                 }
-                                if ($attributeCode){                                    
+                                if ($attributeCode){                                                                        
                                     $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
                                     if($attributeValue == ''){
                                         $attributeCode = explode('-',$attributeCode)[1];
                                         $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                        break;
                                     }
                                 }else{
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
                         case 'ProductDescription':
@@ -296,12 +357,13 @@ class CedNeweggProduct
                                     if($attributeValue == ''){
                                         $attributeCode = explode('-',$attributeCode)[1];
                                         $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                        break;
                                     }
                                 }else{
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
                         case 'ItemWeight':
@@ -311,16 +373,21 @@ class CedNeweggProduct
                                     $attributeCode = $neweggAttribute['presta_attr_code'];
                                 }
                                 if ($attributeCode){                                    
-                                    $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
+                                    if($type != 'combination') {                                 
+                                        $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
+                                    } else {         
+                                        $attributeCode = explode('-',$attributeCode)[1];                      
+                                        $attributeValue = $combination["$attributeCode"];
+                                    }
                                     if($attributeValue == ''){
-                                        $attributeCode = explode('-',$attributeCode)[1];
-                                        $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                        $result['error'] .= $_skus.": ".$attributeCode . ' is a required field. </br>';
+                                        break;
                                     }
                                 }else{
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
                         case 'PacksOrSets':
@@ -333,13 +400,14 @@ class CedNeweggProduct
                                     $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
                                     if($attributeValue == ''){
                                         $attributeCode = explode('-',$attributeCode)[1];
-                                        $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                        $result['error'] .= $_skus.": ".$attributeCode . ' is a required field. </br>';
+                                        break;
                                     }
                                 }else{
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
                         case 'ItemCondition':
@@ -352,13 +420,14 @@ class CedNeweggProduct
                                     $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
                                     if($attributeValue == ''){
                                         $attributeCode = explode('-',$attributeCode)[1];
-                                        $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                        $result['error'] .= $sku.": ".$attributeCode . ' is a required field. </br>';
+                                        break;
                                     }
                                 }else{
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
                         case 'ShippingRestriction':
@@ -371,13 +440,14 @@ class CedNeweggProduct
                                     $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
                                     if($attributeValue == ''){
                                         $attributeCode = explode('-',$attributeCode)[1];
-                                        $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                        $result['error'] .= $sku.": ".$attributeCode . ' is a required field. </br>';
+                                        break;
                                     }
                                 }else{
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
                         case 'Shipping':
@@ -390,13 +460,14 @@ class CedNeweggProduct
                                     $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
                                     if($attributeValue == ''){
                                         $attributeCode = explode('-',$attributeCode)[1];
-                                        $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                        $result['error'] .= $sku.": ".$attributeCode . ' is a required field. </br>';
+                                        break;
                                     }
                                 }else{
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
                         default:
@@ -409,13 +480,14 @@ class CedNeweggProduct
                                     $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
                                     if($attributeValue == ''){
                                         $attributeCode = explode('-',$attributeCode)[1];
-                                        $result['error'] .= $attributeCode . ' is a required field. </br>';
+                                        $result['error'] .= $sku.": ".$attributeCode . ' is a required field. </br>';
+                                        break;
                                     }
                                 }else{
                                     $attributeValue = $neweggAttribute['default'];
                                 }
                             } else {
-                                $result['error'] .= $neweggAttribute['name'] . ' is a required field. </br>';
+                                $result['error'] .= $sku.": ".$neweggAttribute['name'] . ' is a required field. </br>';
                             }
                             break;
                     }
@@ -513,6 +585,91 @@ class CedNeweggProduct
                 $message['Itemfeed'] = $itemFeed;
                 $newegg_envelope['Message'] = $message;
                 $post_data['NeweggEnvelope'] = $newegg_envelope;
+                $data = json_encode($post_data);
+                $response = $this->postRequest('/datafeedmgmt/feeds/submitfeed', $this->getAccountDetails($accountId), ['body' => $data,
+                    'append' => '&requesttype=ITEM_DATA']);
+                // $response = json_decode($response,true);
+
+                // echo '<pre>'; print_r($response); die(__FILE__);
+                if($response['IsSuccess']==1){
+                    $api_data = array('IsSuccess' => true, 'QueueId' => $response['ResponseBody']['ResponseList'][0]['RequestId'] );
+                    return $api_data;
+                }else{
+                    return false;
+                }
+            }
+        } catch (\Exception $e) {
+            print_r($e->getMessage()."::".$e->getLine()."::".$e->getFile()); die(__FILE__);
+        }
+    }
+
+    /**
+     * create simple product on newegg
+     * @param array $ids
+     * @throws \Exception
+     */
+    private function prepareVariableProducts($ids = [], $profileId, $accountId)
+    {
+        try {
+            $default_lang = (int)Configuration::get('PS_LANG_DEFAULT');
+            if (is_array($ids) && count($ids) > 0) {
+                $newegg_envelope = array();
+                $newegg_envelope['Header'] = array('DocumentVersion' => '1.0');
+                $newegg_envelope['MessageType'] = 'BatchItemCreation';
+                $newegg_envelope['Overwrite'] = 'No';
+                $message = array();
+                $itemFeeds = array();
+                $post_data = array();
+                $this->key = 0;
+                $summaryInfo = '';
+                $items = array();
+                foreach ($ids as $id) {
+                    $product = new Product($id);
+                    $profileData = $this->profileProductData($id, $profileId);
+                    $productStatus =$profileData['newegg_product_status'] /*$profileData->getColumnValues('newegg_product_status')*/;
+                    $profileProductsId = $profileData['id']/*$profileData->getColumnValues('id')*/;
+                    $profile = $this->profileData($profileId);
+                    $categoryId = isset(explode(':', $profile['profile_category'])[0]) ? explode(':', $profile['profile_category'])[0] : null;
+                    $categoryName = isset(explode(':', $profile['profile_category'])[1]) ? explode(':', $profile['profile_category'])[1] : null;
+                    if (!$categoryId) {
+                        continue;
+                    }
+                    $product_combination = $this->getAttributesResume($id, $default_lang);
+                    // echo '<pre>'; print_r($product_combination); die('hdk');
+                    if (isset($product_combination) && is_array($product_combination) && $product_combination) {
+                        foreach ($product_combination as $product_single) {
+                            $item = array();
+                            
+                                if(empty($summaryInfo)) {
+                                    $itemFeed['SummaryInfo'] = array('SubCategoryID' => $categoryId);
+                                }   
+                                $summaryInfo = $itemFeed['SummaryInfo'];
+                                
+                            if ($productStatus == 'Uploaded') {
+                                $item['Action'] = 'Update Item';
+                            } else {
+                                $item['Action'] = 'Create Item';
+                            }
+
+                            $productArray = (array)$product;
+                            $item['BasicInfo'] = array();
+                            $requiredAttributes = json_decode($profile['profile_req_opt_attribute'], 1)[0];
+                            $item['BasicInfo'] = $this->getProductInfo($id, (array)$product, $requiredAttributes, $product_single, 'variable', count($product_combination));
+                            $item['SubCategoryProperty'] = $this->getCategoryDataModified($id, (array)$product,$requiredAttributes,$categoryName);
+                            array_push($items , $item);
+                    }
+                }
+                    // $this->key++;
+                    // $profileProducts = $this->profileproducts->create()->load($profileProductsId);
+                    // $profileProducts->setData('newegg_product_status', 'uploaded')->save();
+                }
+                // echo '<pre>'; print_r($items); die('<br>aaa');
+                $itemFeed['Item'] = $items;
+                $message['Itemfeed'] = $itemFeed;
+                $newegg_envelope['Message'] = $message;
+                $post_data['NeweggEnvelope'] = $newegg_envelope;
+                // echo '<pre>'; print_r($post_data); die(__FILE__);
+
                 $data = json_encode($post_data);
                 $response = $this->postRequest('/datafeedmgmt/feeds/submitfeed', $this->getAccountDetails($accountId), ['body' => $data,
                     'append' => '&requesttype=ITEM_DATA']);
@@ -634,8 +791,8 @@ class CedNeweggProduct
         }
         return $reqParameter;
     }
-    public function getProductInfo($id, $productArray, $requiredAttributes) {
-        // echo '<pre>'; print_r($productArray); die('<br>abc');
+    public function getProductInfo($id, $productArray, $requiredAttributes, $variant = null, $type = null, $var_counts=null) {
+
         $item = array();
         foreach ($requiredAttributes as $key => $neweggAttribute) {
             switch ($neweggAttribute['name']) {
@@ -645,10 +802,18 @@ class CedNeweggProduct
                         if($neweggAttribute['presta_attr_code']!= '--Set Default Value--'){
                             $attributeCode = $neweggAttribute['presta_attr_code'];
                         }
-                        if ($attributeCode){                                    
-                            $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
+                        if ($attributeCode){  
+                            if($type == 'variable'){
+                                $attributeValue = $variant['supplier_reference'];
+                            } else {                                 
+                               $attributeValue = $this->getMappingValues($id, $productArray, $attributeCode);
+                            }
                             $item['SellerPartNumber'] = $attributeValue;
-                        }else{
+                            if($type = 'variable') {
+                                // print_r($productArray['reference']); die('<br>dfd');
+                                $item['RelatedSellerPartNumber'] = $productArray['reference'];
+                            } 
+                        } else {
                             $item['SellerPartNumber'] = $neweggAttribute['default'];
                         }
                     } 
@@ -675,15 +840,14 @@ class CedNeweggProduct
                         }
                         if ($attributeCode){                                    
                             $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
-                            $item['ManufacturerPartsNumber'] = $attributeValue;
+                            // die($attributeValue);
+                            $item['ManufacturerPartsNumber'] = $variant['ean13'];
                             $item['UPCOrISBN'] = '';
                             $item['ManufacturerItemURL'] = '';
-                            $item['RelatedSellerPartNumber'] = '';
-                        }else{
+                        } else {
                             $item['ManufacturerPartsNumber'] = $neweggAttribute['default'];
                             $item['UPCOrISBN'] = '';
                             $item['ManufacturerItemURL'] = '';
-                            $item['RelatedSellerPartNumber'] = '';
                         }
                     } 
                     break;
@@ -709,32 +873,45 @@ class CedNeweggProduct
                         }
                         if ($attributeCode){                                    
                             $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
-                            $item['BulletDescription'] = $attributeValue[1];
+                            
+                            $item['BulletDescription']  =$this->getMappingValues($id, $productArray ,'system-name')[1];
+                            if($type == 'variable') {
+                                $item['BulletDescription'] = $this->getMappingValues($id, $productArray ,'system-name')[1];
+                                $item['BulletDescription'] .= " ".$variant['combinations'][$var_counts];
+                            }
                             $item['ProductDescription'] = $attributeValue[1];
                             $item['ItemDimension'] = array();
-                            $item['ItemDimension']['ItemLength'] = number_format( $productArray['depth'], 2, '.', '' );
-                            $item['ItemDimension']['ItemWidth'] = number_format( $productArray['width'], 2, '.', '' );
-                            $item['ItemDimension']['ItemHeight'] = number_format( $productArray['height'], 2, '.', '' ); 
+                            $item['ItemDimension']['ItemLength'] = number_format( $productArray['depth'], 2, '.', ',' );
+                            
+                            $item['ItemDimension']['ItemWidth'] = number_format( $productArray['width'], 2, '.', ',' );
+                            $item['ItemDimension']['ItemHeight'] = number_format( $productArray['height'], 2, '.', ',' ); 
                         }else{
                             $item['BulletDescription'] = $neweggAttribute['default'];
+                            if($type == 'variable'){
+                                $item['BulletDescription'] .= " ".$variant['combinations'][$var_counts];
+                            }
                             $item['ProductDescription'] = $neweggAttribute['default'];
                             $item['ItemDimension'] = array();
-                            $item['ItemDimension']['ItemLength'] = number_format( $productArray['depth'], 2, '.', '' );
-                            $item['ItemDimension']['ItemWidth'] = number_format( $productArray['width'], 2, '.', '' );
-                            $item['ItemDimension']['ItemHeight'] = number_format( $productArray['height'], 2, '.', '' );
+                            $item['ItemDimension']['ItemLength'] = number_format( $productArray['depth'], 2, '.', ',' );
+                            $item['ItemDimension']['ItemWidth'] = number_format( $productArray['width'], 2, '.', ',' );
+                            $item['ItemDimension']['ItemHeight'] = number_format( $productArray['height'], 2, '.', ',' );
                         }
                     } 
                     break;
                 case 'ItemWeight':
                     if (isset($neweggAttribute['presta_attr_code']) && $neweggAttribute['presta_attr_code']) {
                         $attributeCode = '';
-                        if($neweggAttribute['presta_attr_code']!= '--Set Default Value--'){
+                        if($neweggAttribute['presta_attr_code']!= '--Set Default Value--') {
                             $attributeCode = $neweggAttribute['presta_attr_code'];
                         }
-                        if ($attributeCode){                                    
-                            $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
-                            $item['ItemWeight'] = $attributeValue;
-                        }else{
+                        if ($attributeCode) {    
+                            if($type == 'variable') {                                
+                            $attributeValue = number_format( $variant['weight'], 2, '.', ',' );
+                            } else {
+                                $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
+                            }
+                            $item['ItemWeight'] = number_format( $attributeValue, 2, '.', ',');
+                        } else {
                             $item['ItemWeight'] = $neweggAttribute['default'];
                         }
                     } 
@@ -763,7 +940,7 @@ class CedNeweggProduct
                             $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
                             $item['ItemCondition'] = $attributeValue;
                             $item['ItemPackage'] = 'OEM';
-                        }else{
+                        } else {
                             $item['ItemCondition'] = $neweggAttribute['default'];
                             $item['ItemPackage'] = 'OEM';
                         }
@@ -836,6 +1013,8 @@ class CedNeweggProduct
         }
         return $item;
     }
+
+
 
     public function getMappingValues($product_id, $product, $attr_code)
     {          
@@ -1017,6 +1196,79 @@ class CedNeweggProduct
             }
             return $additionalAssets;
         }
+    }
+
+    public function getAttributesResume($product_id, $id_lang, $attr_val_sep = ' - ', $attribute_separator = ', ')
+    {
+        if (!Combination::isFeatureActive()) {
+            return array();
+        }
+
+        $combinations = Db::getInstance()->executeS('SELECT pa.*, product_attribute_shop.*
+                FROM `' . _DB_PREFIX_ . 'product_attribute` pa
+                ' . Shop::addSqlAssociation('product_attribute', 'pa') . '
+                WHERE pa.`id_product` = ' . (int)$product_id . '
+                GROUP BY pa.`id_product_attribute`');
+
+        if (!$combinations) {
+            return false;
+        }
+
+        $product_attributes = array();
+        foreach ($combinations as $combination) {
+            $product_attributes[] = (int)$combination['id_product_attribute'];
+        }
+
+        $lang = Db::getInstance()->executeS('SELECT pac.id_product_attribute, 
+        GROUP_CONCAT(agl.`id_attribute_group`, \'' . pSQL($attr_val_sep) . '\',al.`name` 
+        ORDER BY agl.`id_attribute_group` 
+        SEPARATOR \'' . pSQL($attribute_separator) . '\') as combinations ,a.id_attribute_group
+                FROM `' . _DB_PREFIX_ . 'product_attribute_combination` pac
+                LEFT JOIN `' . _DB_PREFIX_ . 'attribute` a 
+                ON a.`id_attribute` = pac.`id_attribute`
+                LEFT JOIN `' . _DB_PREFIX_ . 'attribute_group` ag 
+                ON ag.`id_attribute_group` = a.`id_attribute_group`
+                LEFT JOIN `' . _DB_PREFIX_ . 'attribute_lang` al 
+                ON (a.`id_attribute` = al.`id_attribute` AND al.`id_lang` =' . (int)$id_lang . ')
+                LEFT JOIN `' . _DB_PREFIX_ . 'attribute_group_lang` agl 
+                ON (ag.`id_attribute_group` = agl.`id_attribute_group` AND agl.`id_lang` = ' . (int)$id_lang . ')
+                WHERE pac.id_product_attribute IN (' . implode(',', (array)$product_attributes) . ')
+                GROUP BY pac.id_product_attribute');
+
+        foreach ($lang as $k => $row) {
+            $temp = explode(',', $row['combinations']);
+            $temp3 = array();
+            foreach ($temp as $key => $value) {
+                $temp1 = explode('-', $value);
+                if (isset($temp1['0']) && isset($temp1['1'])) {
+                    $temp3[trim($temp1['0'])] = trim($temp1['1']);
+                } elseif (isset($temp1['0'])) {
+                    $temp3[trim($temp1['0'])] = trim($temp1['0']);
+                }
+            }
+            $combinations[$k]['combinations'] = $temp3;
+        }
+
+        //Get quantity of each variations
+        foreach ($combinations as $key => $row) {
+            $cache_key = $row['id_product'] . '_' . $row['id_product_attribute'] . '_quantity';
+
+            if (!Cache::isStored($cache_key)) {
+                $result = StockAvailable::getQuantityAvailableByProduct(
+                    $row['id_product'],
+                    $row['id_product_attribute']
+                );
+                Cache::store(
+                    $cache_key,
+                    $result
+                );
+                $combinations[$key]['quantity'] = $result;
+            } else {
+                $combinations[$key]['quantity'] = Cache::retrieve($cache_key);
+            }
+        }
+
+        return $combinations;
     }
 
     public function updateInvPriceCanada($ids, $accountId)
