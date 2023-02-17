@@ -635,7 +635,6 @@ class CedNeweggProduct
                         continue;
                     }
                     $product_combination = $this->getAttributesResume($id, $default_lang);
-                    // echo '<pre>'; print_r($product_combination); die('hdk');
                     if (isset($product_combination) && is_array($product_combination) && $product_combination) {
                         foreach ($product_combination as $product_single) {
                             $item = array();
@@ -654,8 +653,9 @@ class CedNeweggProduct
                             $productArray = (array)$product;
                             $item['BasicInfo'] = array();
                             $requiredAttributes = json_decode($profile['profile_req_opt_attribute'], 1)[0];
+                            $optionalAttributes = json_decode($profile['profile_req_opt_attribute'], 1)[1];
                             $item['BasicInfo'] = $this->getProductInfo($id, (array)$product, $requiredAttributes, $product_single, 'variable', count($product_combination));
-                            $item['SubCategoryProperty'] = $this->getCategoryDataModified($id, (array)$product,$requiredAttributes,$categoryName);
+                            $item['SubCategoryProperty'] = $this->getCategoryDataModified($id, (array)$product,$requiredAttributes,$categoryName,$optionalAttributes);
                             array_push($items , $item);
                     }
                 }
@@ -663,23 +663,21 @@ class CedNeweggProduct
                     // $profileProducts = $this->profileproducts->create()->load($profileProductsId);
                     // $profileProducts->setData('newegg_product_status', 'uploaded')->save();
                 }
-                // echo '<pre>'; print_r($items); die('<br>aaa');
+                $items[0]['BasicInfo']['SellerPartNumber'] = $items[0]['BasicInfo']['RelatedSellerPartNumber'];
+                $items[0]['BasicInfo']['RelatedSellerPartNumber'] = '';
                 $itemFeed['Item'] = $items;
                 $message['Itemfeed'] = $itemFeed;
                 $newegg_envelope['Message'] = $message;
                 $post_data['NeweggEnvelope'] = $newegg_envelope;
-                // echo '<pre>'; print_r($post_data); die(__FILE__);
 
                 $data = json_encode($post_data);
                 $response = $this->postRequest('/datafeedmgmt/feeds/submitfeed', $this->getAccountDetails($accountId), ['body' => $data,
                     'append' => '&requesttype=ITEM_DATA']);
-                // $response = json_decode($response,true);
-
-                // echo '<pre>'; print_r($response); die(__FILE__);
-                if($response['IsSuccess']==1){
+                
+                if($response['IsSuccess']==1) {
                     $api_data = array('IsSuccess' => true, 'QueueId' => $response['ResponseBody']['ResponseList'][0]['RequestId'] );
                     return $api_data;
-                }else{
+                } else {
                     return false;
                 }
             }
@@ -770,7 +768,7 @@ class CedNeweggProduct
         }
         return $json_data;
     }
-    public function getCategoryDataModified($id, $productArray, $requiredAttributes, $category){
+    public function getCategoryDataModified($id, $productArray, $requiredAttributes, $category, $optionalAttributes = null) {
         $reqParameter = array($category => '');
         $reqParameter[$category]= array();
         foreach ($requiredAttributes as $key => $neweggAttribute) {
@@ -783,14 +781,32 @@ class CedNeweggProduct
                     if ($attributeCode){                                    
                         $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
                         $reqParameter[$category][$neweggAttribute['name']] = $attributeValue;
-                    }else{
+                    } else {
                         $reqParameter[$category][$neweggAttribute['name']] = $neweggAttribute['default'];
                     }
                 } 
             }
         }
+        // echo '<pre>'; print_r($optionalAttributes); die(__FILE__);
+        // foreach ($optionalAttributes as $key => $neweggAttribute) {
+        //         if (isset($neweggAttribute['presta_attr_code']) && $neweggAttribute['presta_attr_code']) {
+        //             $attributeCode = '';
+        //             if($neweggAttribute['presta_attr_code']!= '--Set Default Value--'){
+        //                 $attributeCode = $neweggAttribute['presta_attr_code'];
+        //             }
+        //             if ($attributeCode){                                    
+        //                 $attributeValue = $this->getMappingValues($id, $productArray ,$attributeCode);
+        //                 $reqParameter[$category][$neweggAttribute['name']] = $attributeValue;
+        //             } else {
+        //                 $reqParameter[$category][$neweggAttribute['name']] = $neweggAttribute['default'];
+        //             }
+        //         } 
+        // }
+        // echo '<pre>'; print_r($reqParameter); die(__FILE__);
+        
         return $reqParameter;
     }
+
     public function getProductInfo($id, $productArray, $requiredAttributes, $variant = null, $type = null, $var_counts=null) {
 
         $item = array();
@@ -810,7 +826,6 @@ class CedNeweggProduct
                             }
                             $item['SellerPartNumber'] = $attributeValue;
                             if($type = 'variable') {
-                                // print_r($productArray['reference']); die('<br>dfd');
                                 $item['RelatedSellerPartNumber'] = $productArray['reference'];
                             } 
                         } else {
@@ -1024,11 +1039,7 @@ class CedNeweggProduct
                     $attribute_id = $attr_id[1];
                     switch ($attr_type) {
                         case 'attribute':
-                            if ($mapped_attribute_id) {
-                                $attr_val = $this->getAttributeValue($attribute_id, $product_id);
-                            } else {
-                                $attr_val = $attribute_id;
-                            }
+                            $attr_val = $this->getAttributeValue($attribute_id, $product_id);
                             break;
                         case 'feature':
                             $attr_val = $this->getFeatureValue($attribute_id, $product_id);
@@ -1045,7 +1056,7 @@ class CedNeweggProduct
     }
 
     public function getAttributeValue($attribute_group_id, $product_id)
-    {
+    {   $defaultLang = Context::getContext()->language->id;
         $sql_db_intance = Db::getInstance(_PS_USE_SQL_SLAVE_);
         $features = $sql_db_intance->executeS('
 	        SELECT *
@@ -1057,10 +1068,10 @@ class CedNeweggProduct
 			LEFT JOIN ' . _DB_PREFIX_ . 'attribute_group ag 
 			ON ag.id_attribute_group = a.id_attribute_group
 			LEFT JOIN ' . _DB_PREFIX_ . 'attribute_lang al 
-			ON (a.id_attribute = al.id_attribute AND al.id_lang = "' . (int)$this->defaultLang . '")
+			ON (a.id_attribute = al.id_attribute AND al.id_lang = "' . $defaultLang . '")
 			LEFT JOIN ' . _DB_PREFIX_ . 'attribute_group_lang agl 
 			ON (ag.id_attribute_group = agl.id_attribute_group 
-			AND agl.id_lang = "' . (int)$this->defaultLang . '")
+			AND agl.id_lang = "' . $defaultLang . '")
 			WHERE pa.id_product = "' . (int)$product_id . '" 
 			AND a.id_attribute_group = "' . (int)$attribute_group_id . '" 
 			ORDER BY pa.id_product_attribute');
